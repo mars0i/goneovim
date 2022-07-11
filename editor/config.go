@@ -28,56 +28,60 @@ type gonvimConfig struct {
 }
 
 type editorConfig struct {
-	DockmenuActions                  map[string]string
-	OptionsToUseGuideWidth           string
-	FileOpenCmd                      string
-	WindowSeparatorColor             string
-	FontFamily                       string
-	GinitVim                         string
-	WindowSeparatorTheme             string
-	NvimInWsl                        string
-	IndentGuideIgnoreFtList          []string
-	Transparent                      float64
-	DiffDeletePattern                int
-	DiffAddPattern                   int
-	LineToScroll                     int
-	DiffChangePattern                int
-	CacheSize                        int
-	Linespace                        int
-	Letterspace                      float64
-	FontSize                         int
-	Margin                           int
-	Gap                              int
-	Height                           int
-	Width                            int
-	DrawWindowSeparator              bool
-	Macmeta                          bool
-	DrawBorder                       bool
-	DisableLigatures                 bool
-	StartMaximizedWindow             bool
-	WindowSeparatorGradient          bool
-	StartFullscreen                  bool
-	SkipGlobalId                     bool
-	IndentGuide                      bool
-	DisableImeInNormal               bool
-	CachedDrawing                    bool
-	Clipboard                        bool
-	ReversingScrollDirection         bool
-	SmoothScroll                     bool
-	DisableHorizontalScroll          bool
-	DrawBorderForFloatWindow         bool
-	DrawShadowForFloatWindow         bool
-	DesktopNotifications             bool
-	ExtMessages                      bool
-	ExtTabline                       bool
-	ExtPopupmenu                     bool
-	ClickEffect                      bool
-	BorderlessWindow                 bool
-	RestoreWindowGeometry            bool
-	ExtCmdline                       bool
-	WorkAroundNeovimIssue12985       bool
-	NoFontMerge                      bool
-	WindowGeometryBasedOnFontmetrics bool
+	DockmenuActions                         map[string]string
+	OptionsToUseGuideWidth                  string
+	FileOpenCmd                             string
+	WindowSeparatorColor                    string
+	FontFamily                              string
+	GinitVim                                string
+	WindowSeparatorTheme                    string
+	NvimInWsl                               string
+	ModeEnablingIME                         []string
+	IndentGuideIgnoreFtList                 []string
+	Transparent                             float64
+	DiffDeletePattern                       int
+	DiffAddPattern                          int
+	LineToScroll                            int
+	DiffChangePattern                       int
+	CacheSize                               int
+	Linespace                               int
+	Letterspace                             float64
+	FontSize                                int
+	Margin                                  int
+	Gap                                     int
+	Height                                  int
+	Width                                   int
+	SmoothScrollDuration                    int
+	DrawWindowSeparator                     bool
+	Macmeta                                 bool
+	DrawBorder                              bool
+	DisableLigatures                        bool
+	StartMaximizedWindow                    bool
+	WindowSeparatorGradient                 bool
+	StartFullscreen                         bool
+	SkipGlobalId                            bool
+	IndentGuide                             bool
+	DisableImeInNormal                      bool
+	CachedDrawing                           bool
+	Clipboard                               bool
+	ReversingScrollDirection                bool
+	SmoothScroll                            bool
+	DisableHorizontalScroll                 bool
+	DrawBorderForFloatWindow                bool
+	DrawShadowForFloatWindow                bool
+	DesktopNotifications                    bool
+	ExtMessages                             bool
+	ExtTabline                              bool
+	ExtPopupmenu                            bool
+	ClickEffect                             bool
+	BorderlessWindow                        bool
+	RestoreWindowGeometry                   bool
+	ExtCmdline                              bool
+	WorkAroundNeovimIssue12985              bool
+	NoFontMerge                             bool
+	WindowGeometryBasedOnFontmetrics        bool
+	IgnoreFirstMouseClickWhenAppInactivated bool
+	HideTitlebar                            bool
 }
 
 type cursorConfig struct {
@@ -135,6 +139,7 @@ type miniMapConfig struct {
 type scrollBarConfig struct {
 	Visible bool
 	Width   int
+	Color   string
 }
 
 type sideBarConfig struct {
@@ -158,17 +163,13 @@ func newConfig(home string) (string, gonvimConfig) {
 
 	// detect config dir
 	var configDir string
-	if runtime.GOOS != "windows" {
-		xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
-		if xdgConfigHome != "" {
-			configDir = filepath.Join(xdgConfigHome, "goneovim")
-		} else {
-			configDir = filepath.Join(home, ".config", "goneovim")
-		}
-		if !isFileExist(configDir) {
-			configDir = filepath.Join(home, ".goneovim")
-		}
+	xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
+	if xdgConfigHome != "" {
+		configDir = filepath.Join(xdgConfigHome, "goneovim")
 	} else {
+		configDir = filepath.Join(home, ".config", "goneovim")
+	}
+	if !isFileExist(configDir) {
 		configDir = filepath.Join(home, ".goneovim")
 	}
 
@@ -335,6 +336,7 @@ func (c *gonvimConfig) init() {
 
 	c.Editor.LineToScroll = 1
 	c.Editor.SmoothScroll = false
+	c.Editor.SmoothScrollDuration = 300
 	c.Editor.DisableHorizontalScroll = false
 
 	c.Editor.DrawBorderForFloatWindow = false

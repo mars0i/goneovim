@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -89,12 +90,14 @@ type Options struct {
 	Extpopupmenu bool    `long:"extpopupmenu" description:"Externalize the popupmenu"`
 	Version      bool    `long:"version" description:"Print Goneovim version"`
 	Wsl          *string `long:"wsl" description:"Attach to nvim process in wsl environment with distribution(default) [e.g. --wsl=Ubuntu]" optional:"yes" optional-value:""`
+	Nofork       bool    `long:"nofork" description:"Run in foreground"`
 }
 
 // Editor is the editor
 type Editor struct {
 	stop                   chan int
 	signal                 *editorSignal
+	ctx                    context.Context
 	app                    *widgets.QApplication
 	font                   *Font
 	widget                 *widgets.QWidget
@@ -137,6 +140,10 @@ type Editor struct {
 	isKeyAutoRepeating     bool
 	sessionExists          bool
 	isWindowResized        bool
+	isWindowNowActivated   bool
+	isWindowNowInactivated bool
+	isExtWinNowActivated   bool
+	isExtWinNowInactivated bool
 }
 
 func (hl *Highlight) copy() Highlight {
@@ -188,6 +195,8 @@ func InitEditor(options Options, args []string) {
 	e.stop = make(chan int)
 	e.notify = make(chan *Notify, 10)
 	e.cbChan = make(chan *string, 240)
+
+	ctx, cancel := context.WithCancel(context.Background())
 
 	// detect home dir
 	home, err := homedir.Dir()
@@ -271,6 +280,7 @@ func InitEditor(options Options, args []string) {
 	e.window = frameless.CreateQFramelessWindow(e.config.Editor.Transparent, isframeless)
 	e.window.SetupBorderSize(e.config.Editor.Margin)
 	e.window.SetupWindowGap(e.config.Editor.Gap)
+	e.connectWindowEvents()
 	e.setWindowSizeFromOpts()
 	e.showWindow()
 	e.setWindowOptions()
@@ -318,10 +328,11 @@ func InitEditor(options Options, args []string) {
 	e.window.ConnectCloseEvent(func(event *gui.QCloseEvent) {
 		e.putLog("The application was closed outside of Neovim's commands, such as the Close button.")
 		e.cleanup()
-		e.saveAppWindowState()
+		e.saveSessions()
 		if runtime.GOOS == "darwin" {
 			e.app.DisconnectEvent()
 		}
+		e.saveAppWindowState()
 		event.Accept()
 	})
 
@@ -330,28 +341,30 @@ func InitEditor(options Options, args []string) {
 		ret := <-e.stop
 		close(e.stop)
 		e.putLog("The application was quitted with the exit of Neovim.")
+		e.cleanup()
 		if runtime.GOOS == "darwin" {
 			e.app.DisconnectEvent()
 		}
 		e.saveAppWindowState()
-		// e.app.Quit()
+		cancel()
+
 		os.Exit(ret)
 	}()
 
 	// launch thread to copy text to the clipboard in darwin
 	if runtime.GOOS == "darwin" {
 		if e.config.Editor.Clipboard {
-			go func() {
+			go func(c context.Context) {
 				for {
 					select {
-					case <-e.stop:
+					case <-c.Done():
 						return
 					default:
 						text := <-e.cbChan
 						e.app.Clipboard().SetText(*text, gui.QClipboard__Clipboard)
 					}
 				}
-			}()
+			}(ctx)
 		}
 	}
 	e.putLog("done connecting UI siganal")
@@ -452,6 +465,11 @@ func (e *Editor) newSplitter() {
 
 func (e *Editor) initWorkspaces() {
 	e.workspaces = []*Workspace{}
+
+	// If ui attaching remote nvim
+	if !(editor.opts.Server == "" && editor.opts.Wsl == nil && editor.opts.Ssh == "") {
+		e.config.Workspace.RestoreSession = false
+	}
 	if e.config.Workspace.RestoreSession {
 		for i := 0; i <= WORKSPACELEN; i++ {
 			path := filepath.Join(e.configDir, "sessions", strconv.Itoa(i)+".vim")
@@ -505,6 +523,11 @@ func (e *Editor) resizeMainWindow() {
 	windowWidth, windowHeight := cws.updateSize()
 
 	if !editor.config.Editor.WindowGeometryBasedOnFontmetrics {
+		return
+	}
+
+	if e.window.WindowState() == core.Qt__WindowFullScreen ||
+		e.window.WindowState() == core.Qt__WindowMaximized {
 		return
 	}
 
@@ -632,6 +655,9 @@ func (e *Editor) setFont() {
 	e.app.SetFont(gui.NewQFont2(e.extFontFamily, e.extFontSize, 1, false), "QLabel")
 }
 
+// pushNotification is
+//   level: notify level
+//   period: display period
 func (e *Editor) pushNotification(level NotifyLevel, p int, message string, opt ...NotifyOptionArg) {
 	a := NotifyOptions{}
 	for _, o := range opt {
@@ -801,12 +827,31 @@ func (e *Editor) restoreWindow() (isRestoreGeometry, isRestoreState bool) {
 	return
 }
 
+func (e *Editor) connectWindowEvents() {
+	e.window.ConnectKeyPressEvent(e.keyPress)
+	e.window.ConnectKeyReleaseEvent(e.keyRelease)
+	e.window.InstallEventFilter(e.window)
+	e.window.ConnectEventFilter(func(watched *core.QObject, event *core.QEvent) bool {
+		switch event.Type() {
+		case core.QEvent__ActivationChange:
+			if e.window.IsActiveWindow() {
+				e.isWindowNowActivated = true
+				e.isWindowNowInactivated = false
+			} else if !e.window.IsActiveWindow() {
+				e.isWindowNowActivated = false
+				e.isWindowNowInactivated = true
+			}
+		default:
+		}
+
+		return e.window.QFramelessDefaultEventFilter(watched, event)
+	})
+}
+
 func (e *Editor) setWindowOptions() {
 	e.window.SetupTitle("Neovim")
 	e.window.SetMinimumSize2(40, 30)
 	e.initSpecialKeys()
-	e.window.ConnectKeyPressEvent(e.keyPress)
-	e.window.ConnectKeyReleaseEvent(e.keyRelease)
 	e.window.SetAttribute(core.Qt__WA_KeyCompression, false)
 	e.window.SetAcceptDrops(true)
 }
@@ -814,6 +859,10 @@ func (e *Editor) setWindowOptions() {
 func (e *Editor) showWindow() {
 	e.width = e.config.Editor.Width
 	e.height = e.config.Editor.Height
+	if e.config.Editor.HideTitlebar {
+		e.window.IsTitlebarHidden = true
+		e.window.TitleBar.Hide()
+	}
 
 	isRestoreGeometry, isRestoreState := e.restoreWindow()
 
@@ -954,6 +1003,9 @@ func (e *Editor) keyRelease(event *gui.QKeyEvent) {
 
 func (e *Editor) keyPress(event *gui.QKeyEvent) {
 	ws := e.workspaces[e.active]
+	if ws.nvim == nil {
+		return
+	}
 	if !e.isKeyAutoRepeating {
 		ws.getSnapshot()
 	}
@@ -963,7 +1015,7 @@ func (e *Editor) keyPress(event *gui.QKeyEvent) {
 		e.isKeyAutoRepeating = true
 	}
 	if input != "" {
-		e.workspaces[e.active].nvim.Input(input)
+		ws.nvim.Input(input)
 	}
 }
 
@@ -1292,15 +1344,26 @@ func (e *Editor) saveAppWindowState() {
 }
 
 func (e *Editor) cleanup() {
+	// TODO We need to kill the minimap nvim process explicitly?
+
+	if !e.config.Workspace.RestoreSession {
+		return
+	}
 	sessions := filepath.Join(e.configDir, "sessions")
 	os.RemoveAll(sessions)
 	os.MkdirAll(sessions, 0755)
+}
 
-	select {
-	case <-e.stop:
+func (e *Editor) saveSessions() {
+	if !e.config.Workspace.RestoreSession {
 		return
-	default:
 	}
+	ws := e.workspaces[e.active]
+	if ws.uiRemoteAttached {
+		return
+	}
+
+	sessions := filepath.Join(e.configDir, "sessions")
 
 	for i, ws := range e.workspaces {
 		sessionPath := filepath.Join(sessions, strconv.Itoa(i)+".vim")

@@ -101,6 +101,7 @@ type Window struct {
 	extwin                 *ExternalWin
 	background             *RGBA
 	s                      *Screen
+	anchorwin              *Window
 	cwd                    string
 	ft                     string
 	anchor                 string
@@ -610,6 +611,9 @@ func (w *Window) drawFloatWindowBorder(p *gui.QPainter) {
 	if !w.isFloatWin {
 		return
 	}
+	if !w.isExternal {
+		return
+	}
 	var color *RGBA
 	highNo, ok := w.s.highlightGroup["GoneovimFloatWindowBorder"]
 	if !ok {
@@ -812,6 +816,10 @@ func (w *Window) drawWindowSeparator(p *gui.QPainter, gwinrows int) {
 }
 
 func (w *Window) wheelEvent(event *gui.QWheelEvent) {
+	if !w.s.ws.isMouseEnabled {
+		return
+	}
+
 	var v, h, vert, horiz int
 	var action string
 
@@ -1049,7 +1057,7 @@ func (win *Window) smoothScroll(diff int) {
 			}
 		}
 	})
-	a.SetDuration(220)
+	a.SetDuration(editor.config.Editor.SmoothScrollDuration)
 	a.SetStartValue(core.NewQVariant10(1))
 	a.SetEndValue(core.NewQVariant10(0))
 	// a.SetEasingCurve(core.NewQEasingCurve(core.QEasingCurve__OutQuart))
@@ -1110,51 +1118,24 @@ func (win *Window) updateGridContent(row, colStart int, cells []interface{}) {
 		win.scrollPixels[1] = 0
 	}
 
-	// We should control to draw statusline, vsplitter
-	if editor.config.Editor.DrawWindowSeparator && win.grid == 1 {
-
-		isSkipDraw := true
-		if win.s.name != "minimap" {
-
-			// Draw  bottom statusline
-			if row == win.rows-2 {
-				isSkipDraw = false
-			}
-			// Draw tabline
-			if row == 0 {
-				isSkipDraw = false
-			}
-
-			// // Do not Draw statusline of splitted window
-			// win.s.windows.Range(func(_, winITF interface{}) bool {
-			// 	w := winITF.(*Window)
-			// 	if w == nil {
-			// 		return true
-			// 	}
-			// 	if !w.isShown() {
-			// 		return true
-			// 	}
-			// 	if row == w.pos[1]-1 {
-			// 		isDraw = true
-			// 		return false
-			// 	}
-			// 	return true
-			// })
-		} else {
-			isSkipDraw = false
-		}
-
-		if isSkipDraw {
-			return
-		}
-	}
-
 	win.updateLine(row, colStart, cells)
 	win.countContent(row)
-	win.makeUpdateMask(row, colStart, cells)
 
 	if !win.isShown() {
 		win.show()
+	}
+
+	// Related to #364, it seems that in a UI consisting of multiple float windows,
+	// there are cases where the grid in which the grid_line event is emitted
+	// must be considered in the z-order of the UI.
+	if win.isFloatWin && !win.isMsgGrid {
+		if !editor.isExtWinNowInactivated && !editor.isWindowNowInactivated {
+			if win.s.lastGridLineGrid != win.grid {
+				win.zindex.order = globalOrder
+				globalOrder++
+				win.raise()
+			}
+		}
 	}
 
 	if win.isMsgGrid {
@@ -1202,6 +1183,7 @@ func (w *Window) updateLine(row, col int, cells []interface{}) {
 
 			if line[col] == nil {
 				line[col] = &Cell{}
+				w.contentMask[row][col] = true
 			}
 
 			line[col].char = cell[0].(string)
@@ -1221,11 +1203,25 @@ func (w *Window) updateLine(row, col int, cells []interface{}) {
 				}
 			}
 
+			// Update contentmask for screen update
+			if line[col].char == " " &&
+				line[col].highlight.bg().equals(w.background) &&
+				!line[col].highlight.underline &&
+				!line[col].highlight.undercurl &&
+				!line[col].highlight.strikethrough {
+				w.contentMask[row][col] = false
+			} else {
+				w.contentMask[row][col] = true
+			}
+
 			// Detect popupmenu
 			if line[col].highlight.uiName == "Pmenu" ||
 				line[col].highlight.uiName == "PmenuSel" ||
 				line[col].highlight.uiName == "PmenuSbar" {
-				w.isPopupmenu = true
+				if !w.isPopupmenu {
+					w.isPopupmenu = true
+					w.move(w.pos[0], w.pos[1], w.anchorwin)
+				}
 			}
 
 			// Detect winblend
@@ -1285,26 +1281,26 @@ func (w *Window) countContent(row int) {
 	w.lenContent[row] = width
 }
 
-func (w *Window) makeUpdateMask(row, col int, cells []interface{}) {
-	for j, cell := range w.content[row] {
-		if cell == nil {
-			w.contentMask[row][j] = true
-			continue
-
-			// If the target cell is blank and there is no text decoration of any kind
-		} else if cell.char == " " &&
-			cell.highlight.bg().equals(w.background) &&
-			!cell.highlight.underline &&
-			!cell.highlight.undercurl &&
-			!cell.highlight.strikethrough {
-
-			w.contentMask[row][j] = false
-
-		} else {
-			w.contentMask[row][j] = true
-		}
-	}
-}
+// func (w *Window) makeUpdateMask(row, col int, cells []interface{}) {
+// 	for j, cell := range w.content[row] {
+// 		if cell == nil {
+// 			w.contentMask[row][j] = true
+// 			continue
+//
+// 			// If the target cell is blank and there is no text decoration of any kind
+// 		} else if cell.char == " " &&
+// 			cell.highlight.bg().equals(w.background) &&
+// 			!cell.highlight.underline &&
+// 			!cell.highlight.undercurl &&
+// 			!cell.highlight.strikethrough {
+//
+// 			w.contentMask[row][j] = false
+//
+// 		} else {
+// 			w.contentMask[row][j] = true
+// 		}
+// 	}
+// }
 
 func (w *Window) countHeadSpaceOfLine(y int) (int, error) {
 	if w == nil {
@@ -1434,6 +1430,9 @@ func (w *Window) scrollContentByCount(row, left, right, bot, count int) {
 	if len(w.content) <= bot {
 		return
 	}
+	if len(w.content[row]) <= right {
+		return
+	}
 
 	// copy(w.content[row], w.content[row+count])
 	// copy(w.contentMask[row], w.contentMask[row+count])
@@ -1448,6 +1447,12 @@ func (w *Window) scrollContentByCount(row, left, right, bot, count int) {
 // clearLinesWhereContentHasPassed is a function to clear the source area
 // after shifting the contents of w.content array by count.
 func (w *Window) clearLinesWhereContentHasPassed(row, left, right int) {
+	if len(w.content) <= row {
+		return
+	}
+	if len(w.content[row]) <= right {
+		return
+	}
 	for col := left; col <= right; col++ {
 		w.content[row][col] = nil
 		w.contentMask[row][col] = true
@@ -1843,36 +1848,14 @@ func (w *Window) drawText(p *gui.QPainter, y int, col int, cols int) {
 		// we will draw the characters on the screen one by one.
 		if cellBasedDrawing {
 
-			// if CachedDrawing is disabled
-			if !editor.config.Editor.CachedDrawing {
-				w.drawTextInPos(
-					p,
-					// core.NewQPointF3(
-					// 	float64(x)*wsfont.cellwidth,
-					// 	float64(y*wsfont.lineHeight+wsfont.shift+scrollPixels),
-					// ),
-					int(float64(x)*wsfont.cellwidth),
-					y*wsfont.lineHeight+wsfont.shift+scrollPixels,
-					line[x].char,
-					line[x].highlight,
-					true,
-				)
-
-				// if CachedDrawing is enabled
-			} else {
-				w.drawTextInPosWithCache(
-					p,
-					// core.NewQPointF3(
-					// 	float64(x)*wsfont.cellwidth,
-					// 	float64(y*wsfont.lineHeight+scrollPixels),
-					// ),
-					int(float64(x)*wsfont.cellwidth),
-					y*wsfont.lineHeight+scrollPixels,
-					line[x].char,
-					line[x].highlight,
-					false,
-				)
-			}
+			w.drawTextInPos(
+				p,
+				int(float64(x)*wsfont.cellwidth),
+				y*wsfont.lineHeight+scrollPixels,
+				line[x].char,
+				line[x].highlight,
+				false,
+			)
 
 		} else {
 			// Prepare to draw a group of identical highlight units.
@@ -1889,79 +1872,85 @@ func (w *Window) drawText(p *gui.QPainter, y int, col int, cols int) {
 	// This is the normal rendering process for goneovim,
 	// we draw a word snippet of the same highlight on the screen for each of the highlights.
 	if !cellBasedDrawing {
-
-		//  // var pointf *core.QPointF
-		//  var X, Y int
-		//  // if CachedDrawing is disabled
-		//  if !editor.config.Editor.CachedDrawing {
-		//  	// pointf = core.NewQPointF3(
-		//  	// 	pointX,
-		//  	// 	float64((y)*wsfont.lineHeight+wsfont.shift+scrollPixels),
-		//  	// )
-		//  	X = int(pointX)
-		//  	Y = int(float64((y)*wsfont.lineHeight+wsfont.shift+scrollPixels))
-		//  } else { // if CachedDrawing is enabled
-		//  	// pointf = core.NewQPointF3(
-		//  	// 	pointX,
-		//  	// 	float64(y*wsfont.lineHeight+scrollPixels),
-		//  	// )
-		//  	X = int(pointX)
-		//  	Y = int(float64(y*wsfont.lineHeight+scrollPixels))
-		//  }
-
 		for highlight, colorSlice := range chars {
 			var buffer bytes.Buffer
 			slice := colorSlice
 
+			isIndentationWhiteSpace := true
 			pos := col
-			isIndentationWhitespace := true
 			for x := col; x <= col+cols; x++ {
-				if len(slice) == 0 {
-					break
-				}
+
+				isDrawWord := false
 				index := slice[0]
 
-				if x < index {
-					// buffer.WriteString(" ")
-					if isIndentationWhitespace {
-						pos++
-					} else {
-						buffer.WriteString(" ")
+				if len(slice) != 0 {
+
+					// e.g. when the contents of the line is;
+					//    [ 'a', 'b', ' ', 'c', ' ', ' ', 'd', 'e', 'f' ]
+					//
+					// then, the slice is [ 1,2,4,7,8,9 ]
+					// the following process is
+					//  * If a word is separated by a single space, it is treated as a single word.
+					//  * If there are more than two continuous spaces, each word separated by a space
+					//    is treated as an independent word.
+					//
+					//  therefore, the above example will treet that;
+					//  "ab c" and "def"
+
+					if x != index {
+						if isIndentationWhiteSpace {
+							continue
+						} else {
+							if len(slice) > 1 {
+								if x+1 == index {
+									if buffer.Len() > 0 {
+										pos++
+										buffer.WriteString(" ")
+									}
+								} else {
+									isDrawWord = true
+								}
+							} else {
+								isDrawWord = true
+							}
+						}
 					}
-					continue
+
+					if x == index {
+						pos++
+						buffer.WriteString(line[x].char)
+						slice = slice[1:]
+						isIndentationWhiteSpace = false
+
+					}
 				}
 
-				if x == index {
-					buffer.WriteString(line[x].char)
-					slice = slice[1:]
-					isIndentationWhitespace = false
+				if isDrawWord || len(slice) == 0 {
+					if len(slice) == 0 {
+						x++
+					}
+
+					if buffer.Len() != 0 {
+						w.drawTextInPos(
+							p,
+							int(float64(x-pos)*wsfont.cellwidth),
+							y*wsfont.lineHeight+scrollPixels,
+							buffer.String(),
+							highlight,
+							true,
+						)
+
+						buffer.Reset()
+						isDrawWord = false
+						pos = 0
+					}
+
+					if len(slice) == 0 {
+						break
+					}
 				}
 			}
 
-			text := buffer.String()
-
-			// if CachedDrawing is disabled
-			if !editor.config.Editor.CachedDrawing {
-				w.drawTextInPos(
-					p,
-					// pointf,
-					int(float64(pos)*wsfont.cellwidth),
-					y*wsfont.lineHeight+wsfont.shift+scrollPixels,
-					text,
-					highlight,
-					true,
-				)
-			} else { // if CachedDrawing is enabled
-				w.drawTextInPosWithCache(
-					p,
-					// pointf,
-					int(float64(pos)*wsfont.cellwidth),
-					y*wsfont.lineHeight+scrollPixels,
-					text,
-					highlight,
-					true,
-				)
-			}
 		}
 	}
 
@@ -1976,37 +1965,65 @@ func (w *Window) drawText(p *gui.QPainter, y int, col int, cols int) {
 			if line[x] == nil || line[x].char == " " {
 				continue
 			}
+			w.drawTextInPos(
+				p,
+				int(float64(x)*wsfont.cellwidth),
+				y*wsfont.lineHeight+scrollPixels,
+				line[x].char,
+				line[x].highlight,
+				false,
+			)
 
-			// if CachedDrawing is disabled
-			if !editor.config.Editor.CachedDrawing {
-				w.drawTextInPos(
-					p,
-					// core.NewQPointF3(
-					// 	float64(x)*wsfont.cellwidth,
-					// 	float64(y*wsfont.lineHeight+wsfont.shift+scrollPixels),
-					// ),
-					int(float64(x)*wsfont.cellwidth),
-					y*wsfont.lineHeight+wsfont.shift+scrollPixels,
-					line[x].char,
-					line[x].highlight,
-					false,
-				)
-			} else { // if CachedDrawing is enabled
-				w.drawTextInPosWithCache(
-					p,
-					// core.NewQPointF3(
-					// 	float64(x)*wsfont.cellwidth,
-					// 	float64(y*wsfont.lineHeight+scrollPixels),
-					// ),
-					int(float64(x)*wsfont.cellwidth),
-					y*wsfont.lineHeight+scrollPixels,
-					line[x].char,
-					line[x].highlight,
-					false,
-				)
-			}
 		}
 	}
+}
+
+func (w *Window) drawTextInPos(p *gui.QPainter, x, y int, text string, highlight *Highlight, isNormalWidth bool) {
+	wsfont := w.getFont()
+	// if CachedDrawing is disabled
+	if !editor.config.Editor.CachedDrawing {
+		w.drawTextInPosWithNoCache(
+			p,
+			x,
+			y+wsfont.shift,
+			text,
+			highlight,
+			isNormalWidth,
+		)
+	} else { // if CachedDrawing is enabled
+		w.drawTextInPosWithCache(
+			p,
+			x,
+			y,
+			text,
+			highlight,
+			isNormalWidth,
+		)
+	}
+}
+
+func (w *Window) drawTextInPosWithNoCache(p *gui.QPainter, x, y int, text string, highlight *Highlight, isNormalWidth bool) {
+	if text == "" {
+		return
+	}
+
+	font := p.Font()
+	fg := highlight.fg()
+	p.SetPen2(fg.QColor())
+	wsfont := w.getFont()
+
+	if highlight.bold {
+		font.SetWeight(wsfont.fontNew.Weight() + 25)
+	} else {
+		font.SetWeight(wsfont.fontNew.Weight())
+	}
+	if highlight.italic {
+		font.SetItalic(true)
+	} else {
+		font.SetItalic(false)
+	}
+	// p.DrawText(point, text)
+	p.DrawText3(x, y, text)
 }
 
 func (w *Window) drawTextInPosWithCache(p *gui.QPainter, x, y int, text string, highlight *Highlight, isNormalWidth bool) {
@@ -2120,8 +2137,12 @@ func (w *Window) newDecorationCache(char string, highlight *Highlight, isNormalW
 	end := float64(width) * font.cellwidth
 
 	space := float64(font.lineSpace) / 3.0
-	if space > font.ascent/3.0 {
+	if math.Abs(space) > font.ascent/3.0 {
 		space = font.ascent / 3.0
+	}
+	space2 := float64(font.lineSpace)
+	if space2 < -1 {
+		space2 = float64(font.lineSpace) / 2.0
 	}
 	descent := float64(font.height) - font.ascent
 	weight := int(math.Ceil(float64(font.height) / 16.0))
@@ -2129,7 +2150,7 @@ func (w *Window) newDecorationCache(char string, highlight *Highlight, isNormalW
 		weight = 1
 	}
 	if highlight.strikethrough {
-		Y := float64(0*font.lineHeight+scrollPixels) + float64(font.ascent)*0.65 + float64(font.lineSpace/2)
+		Y := float64(0*font.lineHeight+scrollPixels) + float64(font.ascent)*0.65 + float64(space2/2)
 		pi.FillRect5(
 			int(start),
 			int(Y),
@@ -2148,14 +2169,14 @@ func (w *Window) newDecorationCache(char string, highlight *Highlight, isNormalW
 		)
 	}
 	if highlight.undercurl {
-		amplitude := descent*0.65 + float64(font.lineSpace)
+		amplitude := descent*0.65 + float64(space2)
 		maxAmplitude := font.ascent / 8.0
 		if amplitude >= maxAmplitude {
 			amplitude = maxAmplitude
 		}
 		freq := 1.0
 		phase := 0.0
-		Y := float64(0*font.lineHeight+scrollPixels) + float64(font.ascent+descent*0.3) + float64(font.lineSpace/2) + space
+		Y := float64(0*font.lineHeight+scrollPixels) + float64(font.ascent+descent*0.3) + float64(space2/2) + space
 		Y2 := Y + amplitude*math.Sin(0)
 		point := core.NewQPointF3(start, Y2)
 		path := gui.NewQPainterPath2(point)
@@ -2252,7 +2273,7 @@ func (w *Window) newTextCache(text string, highlight *Highlight, isNormalWidth b
 
 	if highlight.bold {
 		// pi.Font().SetBold(true)
-		pi.Font().SetWeight(font.fontNew.Weight() + 25)
+		pi.Font().SetWeight(font.fontNew.Weight() + 50)
 	}
 	if highlight.italic {
 		pi.Font().SetItalic(true)
@@ -2271,30 +2292,6 @@ func (w *Window) newTextCache(text string, highlight *Highlight, isNormalWidth b
 	editor.putLog("finished creating word cache:", text)
 
 	return image
-}
-
-func (w *Window) drawTextInPos(p *gui.QPainter, x, y int, text string, highlight *Highlight, isNormalWidth bool) {
-	if text == "" {
-		return
-	}
-
-	font := p.Font()
-	fg := highlight.fg()
-	p.SetPen2(fg.QColor())
-	wsfont := w.getFont()
-
-	if highlight.bold {
-		font.SetWeight(wsfont.fontNew.Weight() + 25)
-	} else {
-		font.SetWeight(wsfont.fontNew.Weight())
-	}
-	if highlight.italic {
-		font.SetItalic(true)
-	} else {
-		font.SetItalic(false)
-	}
-	// p.DrawText(point, text)
-	p.DrawText3(x, y, text)
 }
 
 func (w *Window) drawForeground(p *gui.QPainter, y int, col int, cols int) {
@@ -2557,6 +2554,9 @@ func (w *Window) getCache() Cache {
 func newWindow() *Window {
 	// widget := widgets.NewQWidget(nil, 0)
 	win := NewWindow(nil, 0)
+	// cursor.StackUnder(win)
+	// cursor.raise()
+
 	win.SetContentsMargins(0, 0, 0, 0)
 	win.SetAttribute(core.Qt__WA_OpaquePaintEvent, true)
 	win.SetStyleSheet(" * { background-color: rgba(0, 0, 0, 0);}")
@@ -2579,6 +2579,25 @@ func newWindow() *Window {
 }
 
 func (w *Window) mouseEvent(event *gui.QMouseEvent) {
+	defer func() {
+		editor.isWindowNowActivated = false
+		editor.isWindowNowInactivated = false
+		editor.isExtWinNowActivated = false
+		editor.isExtWinNowInactivated = false
+	}()
+
+	if editor.config.Editor.IgnoreFirstMouseClickWhenAppInactivated {
+		if w.isExternal {
+			if editor.isExtWinNowActivated && !editor.isWindowNowInactivated {
+				return
+			}
+		} else {
+			if editor.isWindowNowActivated && !editor.isExtWinNowInactivated {
+				return
+			}
+		}
+	}
+
 	if w.lastMouseEvent == nil {
 		w.lastMouseEvent = &inputMouseEvent{}
 	}
@@ -2586,6 +2605,10 @@ func (w *Window) mouseEvent(event *gui.QMouseEvent) {
 		return
 	}
 	w.lastMouseEvent.event = event
+
+	if !w.s.ws.isMouseEnabled {
+		return
+	}
 
 	bt := event.Button()
 	if event.Type() == core.QEvent__MouseMove {
@@ -2712,8 +2735,8 @@ func (w *Window) raise() {
 
 	if !w.isFloatWin && !w.isExternal {
 		w.Raise()
-		w.s.setTopLevelGrid(w.grid)
 	}
+	w.s.setTopLevelGrid(w.grid)
 
 	// Float windows are re-stacked according to the "z-index" and generation order.
 	var floatWins []*Window
@@ -2747,23 +2770,59 @@ func (w *Window) raise() {
 	}
 
 	// handle cursor widget
-	w.setCursorParent()
-	w.s.ws.cursor.raise()
+	w.setUIParent()
 }
 
-func (w *Window) setCursorParent() {
+func (w *Window) setUIParent() {
 	// Update cursor font
 	w.s.ws.cursor.updateFont(w, w.getFont())
-	w.s.ws.cursor.isInPalette = false
+	defer func() {
+		w.s.ws.cursor.isInPalette = false
+	}()
+
+	// // ws := editor.workspaces[editor.active]
+	// prevCursorWin, ok := w.s.ws.screen.getWindow(w.s.ws.cursor.prevGridid)
 
 	// for handling external window
 	if !w.isExternal {
 		editor.window.Raise()
-		w.s.ws.cursor.SetParent(w.s.ws.widget)
+		w.s.ws.cursor.SetParent(w.s.widget)
+		if editor.config.Editor.ExtCmdline {
+			if w.s.ws.palette != nil {
+				w.s.ws.palette.setParent(w)
+				w.s.ws.palette.resize()
+			}
+		}
+
+		// if ok {
+		// 	if prevCursorWin.isExternal {
+		// 		w.s.ws.cursor.raise()
+		// 	}
+		// }
+		// if w.s.ws.cursor.isInPalette {
+		// 	w.s.ws.cursor.raise()
+		// }
 	} else if w.isExternal {
 		w.extwin.Raise()
 		w.s.ws.cursor.SetParent(w.extwin)
+		if editor.config.Editor.ExtCmdline {
+			if w.s.ws.palette != nil {
+				w.s.ws.palette.setParent(w)
+				w.s.ws.palette.resize()
+			}
+		}
+
+		// if ok {
+		// 	if !prevCursorWin.isExternal {
+		// 		w.s.ws.cursor.raise()
+		// 	}
+		// }
+		// if w.s.ws.cursor.isInPalette {
+		// 	w.s.ws.cursor.raise()
+		// }
 	}
+
+	w.s.ws.cursor.raise()
 }
 
 func (w *Window) show() {
@@ -2889,7 +2948,7 @@ func (w *Window) move(col int, row int, anchorwindow ...*Window) {
 		// #316
 		// Adjust the position of the floating window to the inside of the screen
 		// when it is outside of the screen.
-		x, y = w.repositioningFloatwindow([2]int{x, y})
+		x, y = w.repositioningFloatwindow([2]int{anchorposx + x, anchorposy + y})
 	}
 	if w.isExternal {
 		w.Move2(EXTWINBORDERSIZE, EXTWINBORDERSIZE)
@@ -2898,14 +2957,10 @@ func (w *Window) move(col int, row int, anchorwindow ...*Window) {
 		return
 	}
 
-	w.Move2(
-		anchorposx+x,
-		anchorposy+y,
-	)
+	w.Move2(x, y)
 }
 
 func (w *Window) repositioningFloatwindow(pos ...[2]int) (int, int) {
-
 	baseFont := w.s.ws.screen.font
 
 	var winx, winy int
@@ -2917,16 +2972,28 @@ func (w *Window) repositioningFloatwindow(pos ...[2]int) (int, int) {
 		winy = w.Pos().Y()
 	}
 
+	if w.isMsgGrid {
+		return winx, winy
+	}
+
 	width := w.Width()
 	height := w.Height()
 	screenWidth := w.s.widget.Width()
 	screenHeight := w.s.widget.Height()
 
-	if w.pos[0] != 0 && (float64((winx+width)-screenWidth) >= baseFont.cellwidth) {
+	if float64((winx+width)-screenWidth) >= baseFont.cellwidth {
 		winx -= winx + width - screenWidth
 	}
-	if w.pos[1] != 0 && ((winy+height)-screenHeight >= baseFont.lineHeight) {
+	if (winy+height)-screenHeight >= baseFont.lineHeight && !w.isPopupmenu {
 		winy -= winy + height - screenHeight
+	}
+
+	// If the position coordinate is a negative value, it is reset to zero.
+	if winx < 0 {
+		winx = 0
+	}
+	if winy < 0 && !w.isPopupmenu {
+		winy = 0
 	}
 
 	return winx, winy

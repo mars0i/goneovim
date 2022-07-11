@@ -105,6 +105,7 @@ type Workspace struct {
 	isDrawStatusline   bool
 	isDrawTabline      bool
 	terminalMode       bool
+	isMouseEnabled     bool
 }
 
 func newWorkspace(path string) (*Workspace, error) {
@@ -151,9 +152,9 @@ func newWorkspace(path string) (*Workspace, error) {
 
 	// cursor
 	w.cursor = initCursorNew()
-	w.cursor.ws = w
 	w.cursor.SetParent(w.widget)
-	w.cursor.setBypassScreenEvent()
+	w.cursor.ws = w
+	// w.cursor.setBypassScreenEvent()
 
 	// If ExtFooBar is true, then we create a UI component
 	// tabline
@@ -284,6 +285,7 @@ func (w *Workspace) vimEnterProcess() {
 	if editor.opts.Ssh != "" {
 		editor.window.Show()
 	}
+	editor.isWindowNowActivated = false
 
 	// get nvim option
 	if editor.workspaces == nil || len(editor.workspaces) == 1 {
@@ -295,6 +297,12 @@ func (w *Workspace) vimEnterProcess() {
 		editor.resizeMainWindow()
 	})
 	if len(editor.workspaces) == 1 && runtime.GOOS == "linux" {
+		editor.resizeMainWindow()
+	}
+
+	// Explicitly perform font-metrics-based geometry application during the initial
+	// application display.
+	if len(editor.workspaces) == 1 && editor.config.Editor.WindowGeometryBasedOnFontmetrics {
 		editor.resizeMainWindow()
 	}
 
@@ -736,7 +744,7 @@ func (w *Workspace) initGonvim() {
 	aug GoneovimCore | au! | aug END
 	au GoneovimCore VimEnter * call rpcnotify(0, "Gui", "gonvim_enter")
 	au GoneovimCore UIEnter * call rpcnotify(0, "Gui", "gonvim_uienter")
-	au GoneovimCore BufEnter * call rpcnotify(0, "Gui", "gonvim_bufenter", line("$"), win_getid())
+	au GoneovimCore BufEnter * call rpcnotify(0, "Gui", "gonvim_bufenter", win_getid())
 	au GoneovimCore WinEnter,FileType * call rpcnotify(0, "Gui", "gonvim_winenter_filetype", &ft, win_getid())
 	au GoneovimCore OptionSet * if &ro != 1 | silent! call rpcnotify(0, "Gui", "gonvim_optionset", expand("<amatch>"), v:option_new, v:option_old, win_getid()) | endif
 	au GoneovimCore TermEnter * call rpcnotify(0, "Gui", "gonvim_termenter")
@@ -753,11 +761,6 @@ func (w *Workspace) initGonvim() {
 		`
 	}
 
-	if editor.config.ScrollBar.Visible || editor.config.Editor.SmoothScroll {
-		gonvimAutoCmds = gonvimAutoCmds + `
-	au GoneovimCore TextChanged,TextChangedI * call rpcnotify(0, "Gui", "gonvim_textchanged", line("$"))
-	`
-	}
 	if editor.config.Editor.Clipboard {
 		gonvimAutoCmds = gonvimAutoCmds + `
 	au GoneovimCore TextYankPost * call rpcnotify(0, "Gui", "gonvim_copy_clipboard")
@@ -816,9 +819,11 @@ func (w *Workspace) initGonvim() {
 
 func (w *Workspace) loadGinitVim() {
 	if editor.config.Editor.GinitVim != "" {
-		scripts := strings.NewReplacer(`'`, `''`, "\r\n", "\n", "\r", "\n", "\n", "\n").Replace(editor.config.Editor.GinitVim)
-		execGinitVim := fmt.Sprintf(`call execute(split('%s', '\n'))`, scripts)
-		w.nvim.Command(execGinitVim)
+		var result bool
+		_, err := w.nvim.Exec(editor.config.Editor.GinitVim, result)
+		if err != nil {
+			editor.pushNotification(NotifyWarn, 0, "An error occurs while processing Vimscript in Ginitvim.\n"+err.Error(), notifyOptionArg([]*NotifyButton{}))
+		}
 	}
 }
 
@@ -1197,7 +1202,9 @@ func (w *Workspace) updateSize() (windowWidth, windowHeight int) {
 	marginHeight := e.window.BorderSize() * 4
 	titlebarHeight := 0
 	if e.config.Editor.BorderlessWindow && runtime.GOOS != "linux" {
-		titlebarHeight = e.window.TitleBar.Height()
+		if !e.config.Editor.HideTitlebar {
+			titlebarHeight = e.window.TitleBar.Height()
+		}
 	}
 	height -= marginHeight + titlebarHeight
 
@@ -1256,7 +1263,7 @@ func (w *Workspace) updateSize() (windowWidth, windowHeight int) {
 		w.screen.updateSize()
 	}
 	if w.cursor != nil {
-		w.cursor.Resize2(w.screen.width, w.screen.height)
+		w.cursor.resize(w.cursor.width, w.cursor.height)
 		w.cursor.update()
 	}
 	if w.palette != nil {
@@ -1276,6 +1283,11 @@ func (w *Workspace) updateApplicationWindowSize(cols, rows int) {
 	e := editor
 	font := w.font
 
+	if e.window.WindowState() == core.Qt__WindowFullScreen ||
+		e.window.WindowState() == core.Qt__WindowMaximized {
+		return
+	}
+
 	appWinWidth := int(font.cellwidth * float64(cols))
 	appWinHeight := int(float64(font.lineHeight) * float64(rows))
 
@@ -1291,7 +1303,9 @@ func (w *Workspace) updateApplicationWindowSize(cols, rows int) {
 	marginHeight := e.window.BorderSize() * 4
 	titlebarHeight := 0
 	if e.config.Editor.BorderlessWindow && runtime.GOOS != "linux" {
-		titlebarHeight = e.window.TitleBar.Height()
+		if !e.config.Editor.HideTitlebar {
+			titlebarHeight = e.window.TitleBar.Height()
+		}
 	}
 	appWinHeight += marginHeight + titlebarHeight
 
@@ -1394,11 +1408,14 @@ func (w *Workspace) handleRedraw(updates [][]interface{}) {
 				w.cursor.modeIdx = w.modeIdx
 			}
 			w.disableImeInNormal()
+			w.modeEnablingIME()
 			shouldUpdateCursor = true
 
 		// Not used in the current specification.
 		case "mouse_on":
+			w.isMouseEnabled = true
 		case "mouse_off":
+			w.isMouseEnabled = false
 
 		// Indicates to the UI that it must stop rendering the cursor. This event
 		// is misnamed and does not actually have anything to do with busyness.
@@ -1678,6 +1695,23 @@ func (w *Workspace) disableImeInNormal() {
 		w.widget.SetAttribute(core.Qt__WA_InputMethodEnabled, true)
 		editor.widget.SetAttribute(core.Qt__WA_InputMethodEnabled, true)
 	default:
+	}
+}
+
+func (w *Workspace) modeEnablingIME() {
+	if len(editor.config.Editor.ModeEnablingIME) == 0 {
+		return
+	}
+	doEnable := false
+	for _, mode := range editor.config.Editor.ModeEnablingIME {
+		if w.mode == mode {
+			doEnable = true
+		}
+	}
+	if doEnable {
+		w.widget.SetAttribute(core.Qt__WA_InputMethodEnabled, true)
+		editor.widget.SetAttribute(core.Qt__WA_InputMethodEnabled, true)
+	} else {
 		w.widget.SetAttribute(core.Qt__WA_InputMethodEnabled, false)
 		editor.widget.SetAttribute(core.Qt__WA_InputMethodEnabled, false)
 	}
@@ -1753,7 +1787,12 @@ func (w *Workspace) updateWorkspaceColor() {
 	if w.message != nil {
 		w.message.setColor()
 	}
-	// TODO w.screen.setColor()
+
+	// w.screen.setColor()
+
+	if w.cursor != nil {
+		w.cursor.setColor()
+	}
 
 	if w.isDrawStatusline {
 		if w.statusline != nil {
@@ -1846,6 +1885,11 @@ func (w *Workspace) windowViewport(args []interface{}) {
 			w.viewportQue <- scrollvp
 		}
 
+		maxLine := 0
+		if len(arg) >= 7 {
+			maxLine = util.ReflectToInt(arg[6])
+		}
+
 		// Only the viewport of the buffer where the cursor is located is used internally.
 		grid := util.ReflectToInt(arg[0])
 		if grid == w.cursor.gridid {
@@ -1855,6 +1899,8 @@ func (w *Workspace) windowViewport(args []interface{}) {
 				w.viewport = viewport
 				w.viewportMutex.Unlock()
 			}
+			w.maxLineDelta = maxLine - w.maxLine
+			w.maxLine = maxLine
 		}
 	}
 }
@@ -2139,9 +2185,9 @@ func (w *Workspace) handleRPCGui(updates []interface{}) {
 		w.terminalMode = false
 		w.cursor.update()
 	case "gonvim_bufenter":
-		w.maxLine = util.ReflectToInt(updates[1])
+		// w.maxLine = util.ReflectToInt(updates[1])
 		// w.setBuffname(updates[2], updates[3])
-		w.setBuffTS(util.ReflectToInt(updates[2]))
+		w.setBuffTS(util.ReflectToInt(updates[1]))
 	case "gonvim_winenter_filetype":
 		// w.setBuffname(updates[2], updates[3])
 		w.setBuffTS(util.ReflectToInt(updates[2]))
@@ -2155,8 +2201,8 @@ func (w *Workspace) handleRPCGui(updates []interface{}) {
 			}
 			win.doGetSnapshot = true
 		}
-		w.maxLineDelta = util.ReflectToInt(updates[1]) - w.maxLine
-		w.maxLine = util.ReflectToInt(updates[1])
+		// w.maxLineDelta = util.ReflectToInt(updates[1]) - w.maxLine
+		// w.maxLine = util.ReflectToInt(updates[1])
 
 	default:
 		fmt.Println("unhandled Gui event", event)
@@ -2410,9 +2456,17 @@ func (w *Workspace) guiLinespace(args interface{}) {
 	default:
 		return
 	}
-	if lineSpace < 0 {
+
+	// #330: From a rendering architecture perspective, specifying negative values
+	// may not render screen content correctly, but there is a need to set negative values,
+	// so there is no restriction on setting negative values.
+	// if lineSpace < 0 {
+	// 	return
+	// }
+	if lineSpace <= -1*w.font.height {
 		return
 	}
+
 	w.font.changeLineSpace(lineSpace)
 	w.updateSize()
 }
@@ -2746,10 +2800,10 @@ func (w *Workspace) dropEvent(e *gui.QDropEvent) {
 	})
 }
 
-func (w *Workspace) getPointInWidget(col, row, grid int) (int, int, int, bool) {
+func (w *Workspace) getPointInWidget(col, row, grid int) (int, int, *Font, bool) {
 	win, ok := w.screen.getWindow(grid)
 	if !ok {
-		return 0, 0, w.font.lineHeight, false
+		return 0, 0, w.font, false
 	}
 	font := win.getFont()
 
@@ -2768,7 +2822,7 @@ func (w *Workspace) getPointInWidget(col, row, grid int) (int, int, int, bool) {
 	x += int(float64(win.pos[0]) * font.cellwidth)
 	y += win.pos[1] * font.lineHeight
 
-	return x, y, font.lineHeight, isCursorBelowTheCenter
+	return x, y, font, isCursorBelowTheCenter
 }
 
 func (w *Workspace) toggleSmoothScroll() {

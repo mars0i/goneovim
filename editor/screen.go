@@ -21,20 +21,21 @@ var globalOrder int
 
 // Screen is the main editor area
 type Screen struct {
-	fgCache        Cache
-	tooltip        *IMETooltip
-	font           *Font
-	hlAttrDef      map[int]*Highlight
-	widget         *widgets.QWidget
-	ws             *Workspace
-	highlightGroup map[string]int
-	windows        sync.Map
-	name           string
-	cursor         [2]int
-	height         int
-	width          int
-	resizeCount    uint
-	topLevelGrid   int
+	fgCache          Cache
+	tooltip          *IMETooltip
+	font             *Font
+	hlAttrDef        map[int]*Highlight
+	widget           *widgets.QWidget
+	ws               *Workspace
+	highlightGroup   map[string]int
+	windows          sync.Map
+	name             string
+	cursor           [2]int
+	height           int
+	width            int
+	resizeCount      uint
+	topLevelGrid     int
+	lastGridLineGrid int
 }
 
 type Cache struct {
@@ -342,6 +343,9 @@ func (s *Screen) bottomWindowPos() int {
 }
 
 func (s *Screen) mousePressEvent(event *gui.QMouseEvent) {
+	if !s.ws.isMouseEnabled {
+		return
+	}
 	s.mouseEvent(event)
 	if !editor.config.Editor.ClickEffect {
 		return
@@ -438,6 +442,9 @@ func (s *Screen) mousePressEvent(event *gui.QMouseEvent) {
 }
 
 func (s *Screen) mouseEvent(event *gui.QMouseEvent) {
+	if !s.ws.isMouseEnabled {
+		return
+	}
 
 	var targetwin *Window
 
@@ -640,6 +647,13 @@ func (s *Screen) gridResize(args []interface{}) {
 		// resize neovim's window
 		s.resizeWindow(gridid, cols, rows)
 
+		win, ok := s.getWindow(gridid)
+		if !ok {
+			continue
+		}
+		win.move(win.pos[0], win.pos[1])
+		win.show()
+
 		// If events related to the global grid are included
 		// Determine to resize the application window
 		if gridid == 1 && s.name != "minimap" {
@@ -654,6 +668,12 @@ func (s *Screen) gridResize(args []interface{}) {
 
 func (s *Screen) resizeWindow(gridid gridId, cols int, rows int) {
 	win, _ := s.getWindow(gridid)
+
+	if win != nil {
+		if win.cols == cols && win.rows == rows {
+			return
+		}
+	}
 
 	if win != nil && win.snapshot != nil {
 		win.dropScreenSnapshot()
@@ -723,7 +743,7 @@ func (s *Screen) resizeWindow(gridid gridId, cols int, rows int) {
 		// if gridid == 1 && s.name != "minimap" {
 		// 	s.ws.cursor.widget.SetParent(win)
 		// }
-		s.ws.cursor.Raise()
+		s.ws.cursor.raise()
 
 	}
 	winOldCols := win.cols
@@ -747,9 +767,8 @@ func (s *Screen) resizeWindow(gridid gridId, cols int, rows int) {
 
 	win.setGridGeometry(width, height)
 
-	win.move(win.pos[0], win.pos[1])
-
-	win.show()
+	// win.move(win.pos[0], win.pos[1])
+	// win.show()
 
 	win.queueRedrawAll()
 }
@@ -943,31 +962,21 @@ func (s *Screen) gridCursorGoto(args []interface{}) {
 		s.cursor[0] = x
 		s.cursor[1] = y
 
-		if s.ws.cursor.gridid != gridid {
+		if !win.isMsgGrid {
+			s.ws.cursor.prevGridid = s.ws.cursor.bufferGridid
+		}
+		if s.ws.cursor.gridid != win.grid {
 			if !win.isMsgGrid {
 				s.ws.cursor.bufferGridid = gridid
-
-			}
-
-			// Fix #297
-			if win.s.topLevelGrid != win.grid {
-
-				// If a mouse drag event is occurring in the previous
-				// cursor grid, window raising will be suppressed.
-				if s.ws.cursor.gridid != 0 {
-					oldCursorWin, ok := s.getWindow(s.ws.cursor.gridid)
-					if ok {
-						if oldCursorWin.lastMouseEvent != nil && oldCursorWin.lastMouseEvent.action != "drag" {
-							win.raise()
-						}
-					}
-				} else {
-					win.raise()
-				}
 			}
 
 			// Set new cursor grid id
 			s.ws.cursor.gridid = gridid
+			if s.ws.cursor.prevGridid == 0 {
+				s.ws.cursor.prevGridid = gridid
+			}
+
+			win.raise()
 
 			// reset smooth scroll scrolling offset
 			win.scrollPixels2 = 0
@@ -1202,6 +1211,8 @@ func (s *Screen) gridLine(args []interface{}) {
 			util.ReflectToInt(arg.([]interface{})[2]),
 			arg.([]interface{})[3].([]interface{}),
 		)
+
+		s.lastGridLineGrid = win.grid
 	}
 }
 
@@ -1291,10 +1302,14 @@ func (s *Screen) windowPosition(args []interface{}) {
 		id := arg.([]interface{})[1].(nvim.Window)
 		row := util.ReflectToInt(arg.([]interface{})[2])
 		col := util.ReflectToInt(arg.([]interface{})[3])
+		cols := util.ReflectToInt(arg.([]interface{})[4])
+		rows := util.ReflectToInt(arg.([]interface{})[5])
 
 		if isSkipGlobalId(gridid) {
 			continue
 		}
+
+		s.resizeWindow(gridid, cols, rows)
 
 		win, ok := s.getWindow(gridid)
 		if !ok {
@@ -1350,31 +1365,6 @@ func (s *Screen) gridDestroy(args []interface{}) {
 }
 
 func (s *Screen) windowFloatPosition(args []interface{}) {
-
-	// A workaround for the problem that the position of the float window,
-	// which is created as a tooltip suggested by LSP, is not the correct
-	// position in multigrid ui api.
-	isExistPopupmenu := false
-	if s.ws.mode == "insert" {
-		s.windows.Range(func(_, winITF interface{}) bool {
-			win := winITF.(*Window)
-			if win == nil {
-				return true
-			}
-			if win.grid == 1 {
-				return true
-			}
-			if win.isMsgGrid {
-				return true
-			}
-			if win.isPopupmenu {
-				isExistPopupmenu = true
-			}
-
-			return true
-		})
-	}
-
 	for _, arg := range args {
 		gridid := util.ReflectToInt(arg.([]interface{})[0])
 		if isSkipGlobalId(gridid) {
@@ -1402,12 +1392,6 @@ func (s *Screen) windowFloatPosition(args []interface{}) {
 
 		editor.putLog("float window generated:", "anchorgrid", anchorGrid, "anchor", win.anchor, "anchorCol", anchorCol, "anchorRow", anchorRow)
 
-		// if editor.config.Editor.WorkAroundNeovimIssue12985 {
-		if isExistPopupmenu && win.id != -1 {
-			anchorGrid = s.ws.cursor.gridid
-		}
-		// }
-
 		win.propMutex.Lock()
 
 		shouldStackPerZIndex := !win.IsVisible()
@@ -1426,8 +1410,9 @@ func (s *Screen) windowFloatPosition(args []interface{}) {
 		if !ok {
 			continue
 		}
+		win.anchorwin = anchorwin
 
-		// In multigrid ui, the completion float window on the message window appears to be misaligned.
+		// In multigrid ui, the completion float window on the message window seems to be misaligned.
 		// Therefore, a hack to workaround this problem is implemented on the GUI front-end side.
 		// This workaround assumes that the anchor window for the completion window on the message window is always a global grid.
 		pumInMsgWin := false
@@ -1448,15 +1433,18 @@ func (s *Screen) windowFloatPosition(args []interface{}) {
 		anchorposx := anchorwin.pos[0]
 		anchorposy := anchorwin.pos[1]
 
-		// anchorwin.propMutex.Lock()
-		// anchorwinIsExternal := anchorwin.isExternal
-		// anchorwin.propMutex.Unlock()
+		anchorwin.propMutex.Lock()
+		anchorwinIsExternal := anchorwin.isExternal
+		anchorwin.propMutex.Unlock()
 
-		// if anchorwinIsExternal {
-		// 	win.SetParent(anchorwin)
-		// 	anchorposx = 0
-		// 	anchorposy = 0
-		// }
+		if anchorwinIsExternal {
+			win.SetParent(anchorwin)
+			anchorposx = 0
+			anchorposy = 0
+		}
+
+		wincols := int(float64(win.cols) * win.getFont().cellwidth / anchorwin.getFont().cellwidth)
+		winrows := int(math.Ceil(float64(win.rows*win.getFont().lineHeight) / float64(anchorwin.getFont().lineHeight)))
 
 		var col, row int
 		switch win.anchor {
@@ -1464,7 +1452,7 @@ func (s *Screen) windowFloatPosition(args []interface{}) {
 			col = anchorCol
 			row = anchorRow
 		case "NE":
-			col = anchorCol - win.cols
+			col = anchorCol - wincols
 			row = anchorRow
 		case "SW":
 			col = anchorCol
@@ -1482,18 +1470,16 @@ func (s *Screen) windowFloatPosition(args []interface{}) {
 						contextLine = anchorwin.rows - s.cursor[0]
 					}
 					if anchorposy+s.cursor[0] >= win.rows+contextLine {
-						yy = anchorRow + win.rows
+						yy = anchorRow + winrows
 					} else {
 						yy = -anchorposy
 					}
-					// row = anchorposy + yy
 					row = yy
 				} else {
-					// row = anchorposy + anchorRow - win.rows
-					row = anchorRow - win.rows
+					row = anchorRow - winrows
 				}
 			} else {
-				row = anchorRow - win.rows
+				row = anchorRow - winrows
 			}
 
 		case "SE":
@@ -1501,16 +1487,8 @@ func (s *Screen) windowFloatPosition(args []interface{}) {
 			row = anchorRow - win.rows
 		}
 
-		// If the position coordinate is a negative value, it is reset to zero.
-		// I don't know if this is correct in the specification, but this is how nvim appears to work in the terminal.
 		win.pos[0] = anchorposx + col
 		win.pos[1] = anchorposy + row
-		if win.pos[0] < 0 {
-			win.pos[0] = 0
-		}
-		if win.pos[1] < 0 {
-			win.pos[1] = 0
-		}
 
 		win.move(col, row, anchorwin)
 		if shouldStackPerZIndex {
@@ -1555,6 +1533,25 @@ func (s *Screen) windowExternalPosition(args []interface{}) {
 				extwin.SetAttribute(core.Qt__WA_InputMethodEnabled, true)
 				extwin.ConnectInputMethodEvent(s.ws.InputMethodEvent)
 				extwin.ConnectInputMethodQuery(s.ws.InputMethodQuery)
+				extwin.ConnectMousePressEvent(win.mouseEvent)
+				extwin.ConnectMouseReleaseEvent(win.mouseEvent)
+
+				extwin.InstallEventFilter(extwin)
+				extwin.ConnectEventFilter(func(watched *core.QObject, event *core.QEvent) bool {
+					switch event.Type() {
+					case core.QEvent__ActivationChange:
+						if extwin.IsActiveWindow() {
+							editor.isExtWinNowActivated = true
+							editor.isExtWinNowInactivated = false
+						} else if !extwin.IsActiveWindow() {
+							editor.isExtWinNowActivated = false
+							editor.isExtWinNowInactivated = true
+						}
+					default:
+					}
+					return extwin.EventFilterDefault(watched, event)
+				})
+
 				win.background = s.ws.background.copy()
 				extwin.SetAutoFillBackground(true)
 				p := gui.NewQPalette()

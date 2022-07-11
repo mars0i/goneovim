@@ -70,8 +70,8 @@ func newMiniMap() *MiniMap {
 		updates := <-m.redrawUpdates
 		m.handleRedraw(updates)
 	})
-	m.signal.ConnectStopSignal(func() {
-	})
+	// m.signal.ConnectStopSignal(func() {
+	// })
 	// m.widget.ConnectPaintEvent(m.paint)
 	m.widget.ConnectResizeEvent(func(event *gui.QResizeEvent) {
 		m.updateSize()
@@ -124,14 +124,14 @@ func (m *MiniMap) startMinimapProc() {
 	m.updateSize()
 
 	go func() {
-		err = m.nvim.Serve()
-		if err != nil {
-			fmt.Println(err)
-		}
-		m.stopOnce.Do(func() {
-			close(m.stop)
-		})
-		m.signal.StopSignal()
+		_ = m.nvim.Serve()
+		// if err != nil {
+		// 	fmt.Println(err)
+		// }
+		// m.stopOnce.Do(func() {
+		// 	close(m.stop)
+		// })
+		// m.signal.StopSignal()
 	}()
 
 	err = m.nvim.AttachUI(m.cols, m.rows, m.attachUIOption())
@@ -143,7 +143,7 @@ func (m *MiniMap) startMinimapProc() {
 	// neovim.Subscribe("Gui")
 	go func() {
 		neovim.Command(":syntax on")
-		neovim.Command(":set nobackup noswapfile mouse=nv laststatus=0 noruler nowrap noshowmode virtualedit+=all ts=4")
+		neovim.Command(":set ro nobackup noswapfile mouse=nv laststatus=0 noruler nowrap noshowmode virtualedit+=all ts=4")
 	}()
 }
 

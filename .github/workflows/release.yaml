@@ -71,6 +71,16 @@ jobs:
         fetch-depth: 0
         path: ./src/github.com/${{ github.repository }}
 
+    - name: Retrieve version
+      id: version-linux
+      run: |
+        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
+        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
+
+    - name: test version
+      run: |
+        echo ${{ steps.version-linux.outputs.GONEOVIM_VERSION }}
+
     - name: Free disk space
       run: |
         sudo swapoff -a
@@ -86,29 +96,30 @@ jobs:
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         $(go env GOPATH)/bin/qtmoc
 
-    - name: Retrieve version
-      id: version-linux
-      run: |
-        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
-        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
-
     - name: Build
       run: |
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         $(go env GOPATH)/bin/qtdeploy -ldflags "-X github.com/akiyosi/goneovim/editor.Version=${{ steps.version-linux.outputs.GONEOVIM_VERSION }}" build desktop
         cp -pR ../../runtime ./deploy/linux/
 
+    - if: github.event_name == 'workflow_dispatch'
+      run: echo "ARCHIVE_NAME=goneovim-linux" >> $GITHUB_ENV
+    - if: github.event_name == 'schedule'
+      run: echo "ARCHIVE_NAME=goneovim-linux" >> $GITHUB_ENV
+    - if: github.event_name == 'push'
+      run: echo "ARCHIVE_NAME=goneovim-${{ steps.version-linux.outputs.GONEOVIM_VERSION }}linux" >> $GITHUB_ENV
+
     - name: Archive
       run: |
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy
-        mv linux goneovim-linux
-        tar -jcvf goneovim-linux.tar.bz2 goneovim-linux
+        mv linux "$ARCHIVE_NAME"
+        tar -jcvf "$ARCHIVE_NAME".tar.bz2 "$ARCHIVE_NAME"
 
     - name: Upload
       uses: actions/upload-artifact@v1
       with:
         name: goneovim-linux
-        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/goneovim-linux.tar.bz2
+        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/${{ env.ARCHIVE_NAME }}.tar.bz2
 
   archlinux:
     needs: [check-new-commit]
@@ -156,6 +167,16 @@ jobs:
         fetch-depth: 0
         path: ./src/github.com/${{ github.repository }}
 
+    - name: Retrieve version
+      id: version-linux
+      run: |
+        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
+        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
+
+    - name: test version
+      run: |
+        echo ${{ steps.version-linux.outputs.GONEOVIM_VERSION }}
+
     - name: Free disk space
       run: |
         sudo swapoff -a
@@ -171,29 +192,30 @@ jobs:
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         $(go env GOPATH)/bin/qtmoc
 
-    - name: Retrieve version
-      id: version-linux
-      run: |
-        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
-        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
-
     - name: Build for linux
       run: |
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         $(go env GOPATH)/bin/qtdeploy -ldflags "-X github.com/akiyosi/goneovim/editor.Version=${{ steps.version-linux.outputs.GONEOVIM_VERSION }}" -docker build linux_arch
         cp -pR ../../runtime ./deploy/linux/
 
+    - if: github.event_name == 'workflow_dispatch'
+      run: echo "ARCHIVE_NAME=goneovim-archlinux" >> $GITHUB_ENV
+    - if: github.event_name == 'schedule'
+      run: echo "ARCHIVE_NAME=goneovim-archlinux" >> $GITHUB_ENV
+    - if: github.event_name == 'push'
+      run: echo "ARCHIVE_NAME=goneovim-${{ steps.version-linux.outputs.GONEOVIM_VERSION }}-archlinux" >> $GITHUB_ENV
+
     - name: Archive
       run: |
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy
-        mv linux goneovim-archlinux
-        tar -jcvf goneovim-archlinux.tar.bz2 goneovim-archlinux
+        mv linux "$ARCHIVE_NAME"
+        tar -jcvf "$ARCHIVE_NAME".tar.bz2 "$ARCHIVE_NAME"
 
     - name: Upload
       uses: actions/upload-artifact@v1
       with:
         name: goneovim-archlinux
-        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/goneovim-archlinux.tar.bz2
+        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/${{ env.ARCHIVE_NAME }}.tar.bz2
 
   windows:
     needs: [check-new-commit]
@@ -241,6 +263,16 @@ jobs:
         fetch-depth: 0
         path: ./src/github.com/${{ github.repository }}
 
+    - name: Retrieve version
+      id: version-windows
+      run: |
+        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
+        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
+
+    - name: test version
+      run: |
+        echo ${{ steps.version-windows.outputs.GONEOVIM_VERSION }}
+
     - name: Free disk space
       run: |
         sudo swapoff -a
@@ -256,32 +288,33 @@ jobs:
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         $(go env GOPATH)/bin/qtmoc
 
-    - name: Retrieve version
-      id: version-linux
-      run: |
-        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
-        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
-
     - name: Build for windows
       run: |
         cd ${{ github.workspace }}/src/github.com/akiyosi
         git clone https://github.com/akiyosi/w32.git
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         rm -fr ../../editor/moc*
-        $(go env GOPATH)/bin/qtdeploy -ldflags "-X github.com/akiyosi/goneovim/editor.Version=${{ steps.version-linux.outputs.GONEOVIM_VERSION }}" -docker build windows_64_static
+        $(go env GOPATH)/bin/qtdeploy -ldflags "-X github.com/akiyosi/goneovim/editor.Version=${{ steps.version-windows.outputs.GONEOVIM_VERSION }}" -docker build windows_64_static
         cp -pR ../../runtime ./deploy/windows/
+
+    - if: github.event_name == 'workflow_dispatch'
+      run: echo "ARCHIVE_NAME=goneovim-windows" >> $GITHUB_ENV
+    - if: github.event_name == 'schedule'
+      run: echo "ARCHIVE_NAME=goneovim-windows" >> $GITHUB_ENV
+    - if: github.event_name == 'push'
+      run: echo "ARCHIVE_NAME=goneovim-${{ steps.version-windows.outputs.GONEOVIM_VERSION }}-windows" >> $GITHUB_ENV
 
     - name: Archive
       run: |
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy
-        mv windows goneovim-windows
-        zip goneovim-windows -r goneovim-windows
+        mv windows "$ARCHIVE_NAME"
+        zip -r "$ARCHIVE_NAME".zip "$ARCHIVE_NAME"
 
     - name: Upload
       uses: actions/upload-artifact@v1
       with:
         name: goneovim-windows
-        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/goneovim-windows.zip
+        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/${{ env.ARCHIVE_NAME }}.zip
 
   macos:
     needs: [check-new-commit]
@@ -328,15 +361,27 @@ jobs:
         fetch-depth: 0
         path: ./src/github.com/${{ github.repository }}
 
-    - uses: actions/cache@v2
-      id: cache-qt-bindings-macos-11
-      with:
-        path: ${{ github.workspace }}/src/github.com/therecipe
-        key: ${{ matrix.qtversion }}-qtbindings-macos-11-${{ env.cache-version }}
+    - name: Retrieve version
+      id: version-macos-11
+      run: |
+        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
+        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
+        echo "::set-output name=GONEOVIM_VERSION_HASH::$(git rev-parse HEAD)"
+
+    - name: test version
+      run: |
+        echo ${{ steps.version-macos-11.outputs.GONEOVIM_VERSION }}
+
+    # - uses: actions/cache@v2
+    #   id: cache-qt-bindings-macos-11
+    #   with:
+    #     path: ${{ github.workspace }}/src/github.com/therecipe
+    #     key: ${{ matrix.qtversion }}-qtbindings-macos-11-${{ env.cache-version }}
+    
+    #if: ${{ steps.cache-qt-bindings-macos-11.outputs.cache-hit != 'true' }}
 
     - name: Generate Qt bindings
       continue-on-error: true
-      if: ${{ steps.cache-qt-bindings-macos-11.outputs.cache-hit != 'true' }}
       run: $(go env GOPATH)/bin/qtsetup -test=false
 
     - name: Get dependencies
@@ -344,13 +389,6 @@ jobs:
         go get -v -t -d github.com/${{ github.repository }}/...
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim
         $(go env GOPATH)/bin/qtmoc
-
-    - name: Retrieve version
-      id: version-macos-11
-      run: |
-        cd ${{ github.workspace }}/src/github.com/${{ github.repository }}
-        echo "::set-output name=GONEOVIM_VERSION::$(git describe --tags)"
-        echo "::set-output name=GONEOVIM_VERSION_HASH::$(git rev-parse HEAD)"
 
     - name: Build
       run: |
@@ -364,18 +402,24 @@ jobs:
         rm -fr QtQuick.framework
         rm -fr QtVirtualKeyboard.framework
 
+    - if: github.event_name == 'workflow_dispatch'
+      run: echo "ARCHIVE_NAME=goneovim-macos" >> $GITHUB_ENV
+    - if: github.event_name == 'schedule'
+      run: echo "ARCHIVE_NAME=goneovim-macos" >> $GITHUB_ENV
+    - if: github.event_name == 'push'
+      run: echo "ARCHIVE_NAME=goneovim-${{ steps.version-macos-11.outputs.GONEOVIM_VERSION }}-macos" >> $GITHUB_ENV
+
     - name: Archive
       run: |
         cd ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy
-        mv darwin goneovim-macos
-        tar -jcvf goneovim-macos.tar.bz2 goneovim-macos
+        mv darwin "$ARCHIVE_NAME"
+        tar -jcvf "$ARCHIVE_NAME".tar.bz2 "$ARCHIVE_NAME"
 
     - name: Upload
       uses: actions/upload-artifact@v1
       with:
         name: goneovim-macos
-        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/goneovim-macos.tar.bz2
-
+        path: ${{ github.workspace }}/src/github.com/${{ github.repository }}/cmd/goneovim/deploy/${{ env.ARCHIVE_NAME }}.tar.bz2
 
   publish:
     needs: [linux, archlinux, windows, macos]
